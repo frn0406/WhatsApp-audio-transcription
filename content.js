@@ -98,16 +98,30 @@
     return false;
   }
 
+  // Journalise l'état de tous les éléments <audio> (diagnostic).
+  function dumpAudioState(tag) {
+    const els = [...document.querySelectorAll("audio")];
+    console.log(
+      `[WAT] ${tag} — ${els.length} <audio> :`,
+      els.map((a) => ({
+        src: a.src,
+        currentSrc: a.currentSrc,
+        srcObject: a.srcObject ? a.srcObject.constructor.name : null,
+        readyState: a.readyState,
+        networkState: a.networkState,
+        duration: a.duration,
+        paused: a.paused,
+      }))
+    );
+  }
+
   // Déclenche (silencieusement) la lecture pour forcer WhatsApp à charger le
-  // blob, récupère l'URL, puis remet immédiatement en pause. Renvoie l'URL
-  // blob ou null. Aucun son n'est joué : injected.js force le mode muet dès
-  // le premier appel à play().
-  async function triggerAndGetBlobUrl(bubble) {
-    // Active la coupure forcée du son dans le contexte de la page.
+  // média, le télécharge PENDANT la lecture (avant toute pause/révocation du
+  // blob), puis remet en pause. Renvoie { buf, mime } ou null. Aucun son n'est
+  // joué : injected.js force le mode muet dès le premier appel à play().
+  async function grabAudio(bubble) {
     window.postMessage({ type: "WAT_FORCE_MUTE" }, "*");
 
-    // Coupe aussi tout de suite le lecteur partagé s'il existe déjà, en
-    // mémorisant son état pour le restaurer ensuite.
     const shared = document.querySelector("audio");
     const restore = shared
       ? { el: shared, muted: shared.muted, volume: shared.volume }
@@ -117,30 +131,56 @@
     const before = findBlobAudio();
     const beforeSrc = before ? before.currentSrc || before.src : null;
 
-    let audio = null;
+    dumpAudioState("avant clic play");
+
+    let result = null;
+    let lastFetchError = null;
     try {
       if (!clickIcon(bubble, ["audio-play", "ptt-play"])) {
-        // Pas de bouton play : dernier recours, un blob déjà présent.
-        return beforeSrc && beforeSrc.startsWith("blob:") ? beforeSrc : null;
+        console.warn("[WAT] bouton play introuvable dans la bulle");
+        return null;
       }
 
-      // Attend l'apparition du blob (le fichier complet est disponible dès le
-      // début de la lecture : inutile d'écouter le message en entier).
-      for (let i = 0; i < 60; i++) {
+      // Le fichier complet est disponible dès le début de la lecture : inutile
+      // d'écouter tout le message. On tente le téléchargement dès qu'un blob
+      // apparaît, tant qu'il est encore vivant.
+      for (let i = 0; i < 100; i++) {
         await sleep(80);
         const a = findBlobAudio();
-        if (a) {
-          silence(a);
-          audio = a;
-          const src = a.currentSrc || a.src;
-          if (src && src !== beforeSrc) break; // nouveau média = le bon
+        if (!a) continue;
+        silence(a);
+        const src = a.currentSrc || a.src;
+        if (!src || src === beforeSrc) continue; // pas encore le nouveau média
+
+        try {
+          const resp = await fetch(src);
+          const buf = await resp.arrayBuffer();
+          if (buf.byteLength) {
+            result = {
+              buf,
+              mime: resp.headers.get("content-type") || "audio/ogg",
+            };
+            break;
+          }
+        } catch (e) {
+          lastFetchError = e;
+          // Blob MediaSource (flux) → non téléchargeable via fetch.
+          console.warn("[WAT] fetch du blob échoué :", e && e.message);
         }
       }
-      return audio ? audio.currentSrc || audio.src : null;
+
+      if (!result) {
+        dumpAudioState("ÉCHEC récupération");
+        if (lastFetchError) {
+          console.warn(
+            "[WAT] Dernière erreur fetch :",
+            lastFetchError && lastFetchError.message
+          );
+        }
+      }
+      return result;
     } finally {
-      // Stoppe la lecture immédiatement (sans cliquer le bouton pause, ce qui
-      // pourrait relancer la lecture) et restaure l'état d'origine.
-      const a = audio || findBlobAudio() || shared;
+      const a = findBlobAudio() || shared;
       if (a) {
         try {
           a.pause();
@@ -175,19 +215,15 @@
     showResult(bar, "Transcription en cours…", false);
 
     try {
-      const url = await triggerAndGetBlobUrl(bubble);
-      if (!url) {
+      const grabbed = await grabAudio(bubble);
+      if (!grabbed) {
         throw new Error(
-          "Audio introuvable. Lisez le message une fois puis réessayez."
+          "Audio introuvable (voir la console F12 pour le diagnostic)."
         );
       }
 
-      const resp = await fetch(url);
-      const buf = await resp.arrayBuffer();
-      if (!buf.byteLength) throw new Error("Fichier audio vide.");
-
+      const { buf, mime } = grabbed;
       const audioBase64 = arrayBufferToBase64(buf);
-      const mime = resp.headers.get("content-type") || "audio/ogg";
 
       const answer = await chrome.runtime.sendMessage({
         type: "transcribe",
