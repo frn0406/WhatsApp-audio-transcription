@@ -177,25 +177,13 @@
   }
 
   // Déclenche (silencieusement) la lecture pour forcer WhatsApp à charger le
-  // média, le télécharge PENDANT la lecture (avant toute pause/révocation du
-  // blob), puis remet en pause. Renvoie { buf, mime } ou null. Aucun son n'est
-  // joué : injected.js force le mode muet dès le premier appel à play().
+  // média, et demande à injected.js d'en extraire les octets — quelle que soit
+  // la tuyauterie (Blob, MediaSource par URL ou par srcObject, élément hors
+  // DOM). Renvoie { buf, mime } ou null. Aucun son n'est joué.
   async function grabAudio(bubble) {
     window.postMessage({ type: "WAT_FORCE_MUTE" }, "*");
 
-    const shared = document.querySelector("audio");
-    const restore = shared
-      ? { el: shared, muted: shared.muted, volume: shared.volume }
-      : null;
-    silence(shared);
-
-    const before = findBlobAudio();
-    const beforeSrc = before ? before.currentSrc || before.src : null;
-
-    dumpAudioState("avant clic play");
-
     let result = null;
-    let url = null;
     try {
       const playCtl = findPlayControl(bubble);
       if (!playCtl) {
@@ -205,82 +193,51 @@
       }
       playCtl.click();
 
-      // 1. Attend qu'un média démarre avec une source blob. On interroge
-      // injected.js, qui voit TOUS les médias ayant appelé play() — y compris
-      // les Audio() créés en JS et jamais attachés au DOM, invisibles pour
-      // querySelectorAll("audio").
-      for (let i = 0; i < 120 && !url; i++) {
-        await sleep(80);
-        const playing = await sendToPage({ type: "WAT_GET_PLAYING" });
-        const list = (playing && playing.media) || [];
-        // Le plus récent d'abord.
-        for (let j = list.length - 1; j >= 0; j--) {
-          const src = list[j].currentSrc || list[j].src || "";
-          if (src.startsWith("blob:") && src !== beforeSrc) {
-            url = src;
-            break;
-          }
-        }
-        if (!url) {
-          // Repli DOM classique.
-          const a = findBlobAudio();
-          if (a) {
-            silence(a);
-            const src = a.currentSrc || a.src;
-            if (src) url = src;
-          }
+      // Phase A : attend que des octets soient disponibles (≤ 15 s).
+      let info = null;
+      for (let i = 0; i < 150; i++) {
+        await sleep(100);
+        const r = await sendToPage({ type: "WAT_GRAB", sizeOnly: true });
+        if (r && r.ok && r.size > 0) {
+          info = r;
+          break;
         }
       }
-      if (!url) {
-        const playing = await sendToPage({ type: "WAT_GET_PLAYING" });
-        console.warn("[WAT] aucun média blob détecté — médias suivis :",
-          playing && playing.media);
-        dumpAudioState("aucun média blob détecté");
+      if (!info) {
+        const r = await sendToPage({ type: "WAT_GRAB", sizeOnly: true });
+        console.warn("[WAT] aucun octet capturé — diagnostic :", r);
+        dumpAudioState("échec détection");
         return null;
       }
-      console.log("[WAT] média détecté :", url);
+      console.log(
+        "[WAT] capture en cours :", info.kind + ",",
+        info.size, "octets, flux clos :", !!info.ended
+      );
 
-      // 2. Cas simple : Blob complet, téléchargeable directement.
-      try {
-        const resp = await fetch(url);
-        const buf = await resp.arrayBuffer();
-        if (buf.byteLength) {
-          console.log("[WAT] récupéré via fetch direct,", buf.byteLength, "octets");
-          return (result = {
-            buf,
-            mime: resp.headers.get("content-type") || "audio/ogg",
-          });
-        }
-      } catch (e) {
-        console.log("[WAT] fetch direct impossible (flux MediaSource probable) :", e && e.message);
-      }
+      // Accélère la lecture muette pour charger vite un flux progressif.
+      await sendToPage({ type: "WAT_CONTROL", action: "rate", rate: 16 });
 
-      // 3. Cas MediaSource : les octets sont capturés par injected.js au fil
-      // des appendBuffer. On accélère la lecture muette pour forcer le
-      // chargement complet si le flux est progressif, et on attend que la
-      // taille capturée se stabilise (ou que le flux soit clos).
-      await sendToPage({ type: "WAT_CONTROL", url, action: "rate", rate: 16 });
-      let lastSize = 0;
+      // Phase B : attend la fin du flux ou la stabilité de la taille (≤ 2 min).
+      let lastSize = info.size;
       let stableRounds = 0;
-      for (let i = 0; i < 900; i++) {
-        const info = await getCapturedMedia(url, true);
-        if (info && info.ok && info.size > 0) {
-          if (info.ended) break; // flux clos = tout est capturé
-          if (info.size === lastSize) {
-            if (++stableRounds >= 15) break; // ~2 s sans nouvel octet
-          } else {
-            stableRounds = 0;
-            lastSize = info.size;
-          }
+      for (let i = 0; i < 800 && !info.ended; i++) {
+        await sleep(150);
+        const r = await sendToPage({ type: "WAT_GRAB", sizeOnly: true });
+        if (!r || !r.ok) break;
+        info = r;
+        if (r.size === lastSize) {
+          if (++stableRounds >= 14) break; // ~2 s sans nouvel octet
+        } else {
+          stableRounds = 0;
+          lastSize = r.size;
         }
-        await sleep(120);
       }
 
-      const media = await getCapturedMedia(url, false);
+      const media = await sendToPage({ type: "WAT_GRAB", sizeOnly: false });
       if (media && media.ok && media.buffer && media.buffer.byteLength) {
         console.log(
-          "[WAT] récupéré via capture", media.kind + ",",
-          media.buffer.byteLength, "octets, mime:", media.mime
+          "[WAT] récupéré via", media.kind + ",",
+          media.buffer.byteLength, "octets, mime :", media.mime
         );
         return (result = {
           buf: media.buffer,
@@ -288,26 +245,13 @@
         });
       }
 
+      console.warn("[WAT] ÉCHEC récupération — réponse :", media);
       dumpAudioState("ÉCHEC récupération");
-      console.warn("[WAT] réponse capture :", media);
       return null;
     } finally {
-      // Stoppe le média suivi (même hors DOM) via injected.js.
-      if (url) {
-        try { await sendToPage({ type: "WAT_CONTROL", url, action: "stop" }); } catch (_) {}
-      }
-      const a = findBlobAudio() || shared;
-      if (a) {
-        try {
-          a.pause();
-          a.currentTime = 0;
-          a.playbackRate = 1;
-        } catch (_) {}
-      }
-      if (restore) {
-        restore.el.muted = restore.muted;
-        restore.el.volume = restore.volume;
-      }
+      // Stoppe ET démute tous les lecteurs traqués, succès ou échec — pour ne
+      // jamais laisser WhatsApp muté pour l'utilisateur.
+      await sendToPage({ type: "WAT_CONTROL", action: "stopAll" });
       window.postMessage({ type: "WAT_FORCE_UNMUTE" }, "*");
     }
   }

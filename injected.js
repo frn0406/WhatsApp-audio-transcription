@@ -140,16 +140,30 @@
       return;
     }
 
-    // Contrôle à distance du média suivi (accélérer / stopper).
+    // Contrôle à distance des médias suivis (accélérer / stopper / rétablir).
     if (msg.type === "WAT_CONTROL") {
-      const el =
-        trackedMedia.find((m) => (m.currentSrc || m.src) === msg.url) ||
-        trackedMedia[trackedMedia.length - 1];
-      if (!el) {
-        reply({ ok: false, error: "no-media" });
-        return;
-      }
       try {
+        if (msg.action === "stopAll") {
+          // Stoppe ET démute tout : ne jamais laisser WhatsApp muté.
+          for (const m of trackedMedia) {
+            try {
+              m.pause();
+              m.currentTime = 0;
+              m.playbackRate = 1;
+              m.muted = false;
+              m.volume = 1;
+            } catch (_) {}
+          }
+          reply({ ok: true });
+          return;
+        }
+        const el =
+          trackedMedia.find((m) => (m.currentSrc || m.src) === msg.url) ||
+          trackedMedia[trackedMedia.length - 1];
+        if (!el) {
+          reply({ ok: false, error: "no-media" });
+          return;
+        }
         if (msg.action === "rate") {
           el.muted = true;
           el.volume = 0;
@@ -162,6 +176,103 @@
           el.volume = 1;
         }
         reply({ ok: true });
+      } catch (e) {
+        reply({ ok: false, error: String((e && e.message) || e) });
+      }
+      return;
+    }
+
+    // Extraction directe : trouve le média le plus récent qui joue et renvoie
+    // ses octets, quelle que soit la source (Blob, MediaSource via URL ou via
+    // srcObject). sizeOnly:true renvoie juste taille + état du flux.
+    if (msg.type === "WAT_GRAB") {
+      try {
+        for (let i = trackedMedia.length - 1; i >= 0; i--) {
+          const el = trackedMedia[i];
+          const url = el.currentSrc || el.src || "";
+
+          // 1. MediaSource attaché directement (srcObject, pas d'URL).
+          let ms = null;
+          if (el.srcObject && typeof MediaSource !== "undefined" &&
+              el.srcObject instanceof MediaSource) {
+            ms = el.srcObject;
+          } else if (msByUrl.has(url)) {
+            ms = msByUrl.get(url);
+          }
+          if (ms) {
+            const rec = msData.get(ms);
+            if (rec && rec.chunks.length) {
+              const ended = ms.readyState === "ended";
+              if (msg.sizeOnly) {
+                const size = rec.chunks.reduce((n, c) => n + c.byteLength, 0);
+                reply({ ok: true, kind: "mse", size, ended });
+              } else {
+                const buffer = concatChunks(rec.chunks);
+                reply(
+                  { ok: true, kind: "mse", mime: rec.mime, ended, buffer },
+                  [buffer]
+                );
+              }
+              return;
+            }
+            continue;
+          }
+
+          // 2. Blob complet mémorisé par le hook createObjectURL.
+          const blob = blobByUrl.get(url);
+          if (blob) {
+            if (msg.sizeOnly) {
+              reply({ ok: true, kind: "blob", size: blob.size, ended: true });
+            } else {
+              const buffer = await blob.arrayBuffer();
+              reply(
+                { ok: true, kind: "blob", mime: blob.type, ended: true, buffer },
+                [buffer]
+              );
+            }
+            return;
+          }
+
+          // 3. URL blob inconnue de nos hooks : fetch direct en contexte page.
+          if (url.startsWith("blob:")) {
+            try {
+              const resp = await fetch(url);
+              const buffer = await resp.arrayBuffer();
+              if (buffer.byteLength) {
+                if (msg.sizeOnly) {
+                  reply({ ok: true, kind: "fetch", size: buffer.byteLength, ended: true });
+                } else {
+                  reply(
+                    {
+                      ok: true,
+                      kind: "fetch",
+                      mime: resp.headers.get("content-type") || "audio/ogg",
+                      ended: true,
+                      buffer,
+                    },
+                    [buffer]
+                  );
+                }
+                return;
+              }
+            } catch (_) {}
+          }
+        }
+
+        // Rien trouvé : renvoie l'état des médias suivis pour diagnostic.
+        reply({
+          ok: false,
+          error: "not-found",
+          media: trackedMedia.map((m) => ({
+            src: m.src,
+            currentSrc: m.currentSrc,
+            srcObject: m.srcObject ? m.srcObject.constructor.name : null,
+            paused: m.paused,
+            readyState: m.readyState,
+            duration: m.duration,
+            inDom: m.isConnected,
+          })),
+        });
       } catch (e) {
         reply({ ok: false, error: String((e && e.message) || e) });
       }
