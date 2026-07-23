@@ -1,0 +1,56 @@
+/* Transcription Audio WhatsApp — styles injectés dans WhatsApp Web */
+
+.wat-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.wat-btn {
+  align-self: flex-start;
+  cursor: pointer;
+  border: none;
+  border-radius: 14px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: #fff;
+  background: #00a884; /* vert WhatsApp */
+  transition: background 0.15s ease, opacity 0.15s ease;
+}
+
+.wat-btn:hover:not(:disabled) {
+  background: #017561;
+}
+
+.wat-btn:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.wat-result {
+  max-width: 90%;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(0, 168, 132, 0.12);
+  border: 1px solid rgba(0, 168, 132, 0.3);
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: #111b21;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.wat-result.wat-error {
+  background: rgba(220, 53, 69, 0.1);
+  border-color: rgba(220, 53, 69, 0.35);
+  color: #842029;
+}
+
+/* Mode sombre WhatsApp */
+body[class*="dark"] .wat-result,
+.dark .wat-result {
+  color: #e9edef;
+}

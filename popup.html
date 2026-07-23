@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Transcription Audio WhatsApp</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body {
+        width: 300px;
+        margin: 0;
+        padding: 16px;
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        font-size: 14px;
+        background: #fff;
+        color: #111b21;
+      }
+      h1 {
+        font-size: 15px;
+        margin: 0 0 12px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      label {
+        display: block;
+        margin: 10px 0 4px;
+        font-weight: 600;
+        font-size: 12.5px;
+      }
+      select, input {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 7px 8px;
+        border: 1px solid #ccc;
+        border-radius: 6px;
+        font-size: 13px;
+        background: #fff;
+        color: #111b21;
+      }
+      .hint { font-size: 11.5px; color: #667781; margin-top: 4px; }
+      .hint a { color: #00a884; }
+      button {
+        margin-top: 14px;
+        width: 100%;
+        padding: 9px;
+        border: none;
+        border-radius: 6px;
+        background: #00a884;
+        color: #fff;
+        font-weight: 600;
+        font-size: 13.5px;
+        cursor: pointer;
+      }
+      button:hover { background: #017561; }
+      #status {
+        margin-top: 10px;
+        font-size: 12.5px;
+        min-height: 16px;
+        color: #00a884;
+      }
+      @media (prefers-color-scheme: dark) {
+        body { background: #111b21; color: #e9edef; }
+        select, input { background: #202c33; color: #e9edef; border-color: #374045; }
+      }
+    </style>
+  </head>
+  <body>
+    <h1>🎙️ Transcription Audio WhatsApp</h1>
+
+    <label for="provider">Fournisseur</label>
+    <select id="provider">
+      <option value="groq">Groq — whisper-large-v3-turbo (rapide / gratuit)</option>
+      <option value="openai">OpenAI — whisper-1</option>
+    </select>
+
+    <label for="apiKey">Clé API</label>
+    <input id="apiKey" type="password" placeholder="sk-... / gsk_..." autocomplete="off" />
+    <div class="hint" id="keyHint"></div>
+
+    <label for="language">Langue</label>
+    <input id="language" type="text" value="fr" maxlength="5" />
+    <div class="hint">Code ISO (fr, en, es…). « fr » par défaut.</div>
+
+    <button id="save">Enregistrer</button>
+    <div id="status"></div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
