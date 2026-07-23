@@ -38,8 +38,11 @@ WhatsApp Web ──(blob audio)──▶ content.js ──(base64)──▶ back
      └──────────────────── texte affiché sous le message ◀───────────────────────────┘
 ```
 
-- **`content.js`** — observe le DOM, injecte le bouton, récupère le blob audio du vocal
-  (déclenche la lecture si nécessaire pour forcer le chargement), l'encode en base64.
+- **`injected.js`** — script exécuté dans le contexte de la page (`world: MAIN`).
+  Patche `HTMLMediaElement.play()` pour **forcer le mode muet** pendant la récupération :
+  aucun son n'est joué à l'utilisateur.
+- **`content.js`** — observe le DOM, injecte le bouton, déclenche silencieusement la lecture
+  pour forcer le chargement du blob, l'encode en base64, puis remet aussitôt en pause.
 - **`background.js`** — service worker : construit le `FormData`, appelle l'API Whisper
   (les appels réseau sont faits ici pour contourner CORS via `host_permissions`),
   met en cache le résultat (`chrome.storage.local`, 3 jours).
@@ -57,6 +60,7 @@ WhatsApp Web ──(blob audio)──▶ content.js ──(base64)──▶ back
 | Fichier | Rôle |
 |---------|------|
 | `manifest.json` | Déclaration de l'extension (MV3) |
+| `injected.js` | Force le mode muet pendant la récupération (contexte page) |
 | `content.js` / `content.css` | Injection UI + extraction de l'audio |
 | `background.js` | Appel API Whisper + cache |
 | `popup.html` / `popup.js` | Écran de configuration |
@@ -66,14 +70,15 @@ WhatsApp Web ──(blob audio)──▶ content.js ──(base64)──▶ back
 WhatsApp Web n'insère plus de balise `<audio>` par message tant que le vocal n'est pas lu.
 L'extension s'ancre donc sur des éléments toujours présents : le curseur de lecture
 `[role="slider"][aria-valuetext]` et le bouton play `[data-icon="audio-play"]` (ou `ptt-play`).
-Le blob audio n'est récupéré qu'au clic, en déclenchant brièvement la lecture (le son est
-coupé automatiquement) puis en mettant en pause.
+
+Le blob audio n'est récupéré qu'au clic. La lecture est déclenchée **en mode muet forcé**
+(`injected.js` coupe le son dès le premier `play()`), le fichier complet étant disponible dès
+le début de la lecture : **inutile d'écouter le message en entier**. La lecture est mise en
+pause immédiatement après récupération. L'utilisateur n'entend rien.
 
 ## Limites connues
 
 - WhatsApp Web change régulièrement son DOM ; si le bouton n'apparaît plus, les sélecteurs
   de `content.js` (`[role="slider"][aria-valuetext]`, `data-icon="audio-play"`, `.message-in/.message-out`)
   devront être mis à jour.
-- Un très court extrait sonore peut se faire entendre au tout début de la récupération, avant
-  la coupure automatique du son.
 - Taille max d'un fichier audio : 25 Mo (limite Whisper) — sans objet pour des vocaux normaux.

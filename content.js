@@ -64,6 +64,15 @@
     return null;
   }
 
+  // Coupe immédiatement le son d'un élément <audio>.
+  function silence(a) {
+    if (!a) return;
+    try {
+      a.muted = true;
+      a.volume = 0;
+    } catch (_) {}
+  }
+
   function clickIcon(bubble, iconNames) {
     for (const name of iconNames) {
       const icon = bubble.querySelector(`[data-icon="${name}"]`);
@@ -75,40 +84,61 @@
     return false;
   }
 
-  // Déclenche la lecture pour forcer WhatsApp à charger le blob, récupère
-  // l'URL, puis remet en pause. Renvoie l'URL blob ou null.
+  // Déclenche (silencieusement) la lecture pour forcer WhatsApp à charger le
+  // blob, récupère l'URL, puis remet immédiatement en pause. Renvoie l'URL
+  // blob ou null. Aucun son n'est joué : injected.js force le mode muet dès
+  // le premier appel à play().
   async function triggerAndGetBlobUrl(bubble) {
+    // Active la coupure forcée du son dans le contexte de la page.
+    window.postMessage({ type: "WAT_FORCE_MUTE" }, "*");
+
+    // Coupe aussi tout de suite le lecteur partagé s'il existe déjà, en
+    // mémorisant son état pour le restaurer ensuite.
+    const shared = document.querySelector("audio");
+    const restore = shared
+      ? { el: shared, muted: shared.muted, volume: shared.volume }
+      : null;
+    silence(shared);
+
     const before = findBlobAudio();
     const beforeSrc = before ? before.currentSrc || before.src : null;
 
-    if (!clickIcon(bubble, ["audio-play", "ptt-play"])) {
-      // Pas de bouton play trouvé : dernier recours, un blob déjà présent.
-      return beforeSrc && beforeSrc.startsWith("blob:") ? beforeSrc : null;
-    }
-
     let audio = null;
-    for (let i = 0; i < 60; i++) {
-      await sleep(100);
-      const a = findBlobAudio();
-      if (a) {
-        // Coupe le son au plus tôt pour ne pas déranger l'utilisateur.
-        a.muted = true;
-        a.volume = 0;
-        const src = a.currentSrc || a.src;
-        if (src !== beforeSrc) {
-          audio = a; // nouveau média = celui qu'on vient de lancer
-          break;
-        }
-        audio = a; // sinon on garde le blob courant en repli
+    try {
+      if (!clickIcon(bubble, ["audio-play", "ptt-play"])) {
+        // Pas de bouton play : dernier recours, un blob déjà présent.
+        return beforeSrc && beforeSrc.startsWith("blob:") ? beforeSrc : null;
       }
-    }
 
-    // Remet en pause.
-    clickIcon(bubble, ["audio-pause", "ptt-pause"]);
-    if (audio) {
-      try { audio.pause(); } catch (_) {}
+      // Attend l'apparition du blob (le fichier complet est disponible dès le
+      // début de la lecture : inutile d'écouter le message en entier).
+      for (let i = 0; i < 60; i++) {
+        await sleep(80);
+        const a = findBlobAudio();
+        if (a) {
+          silence(a);
+          audio = a;
+          const src = a.currentSrc || a.src;
+          if (src && src !== beforeSrc) break; // nouveau média = le bon
+        }
+      }
+      return audio ? audio.currentSrc || audio.src : null;
+    } finally {
+      // Stoppe la lecture immédiatement (sans cliquer le bouton pause, ce qui
+      // pourrait relancer la lecture) et restaure l'état d'origine.
+      const a = audio || findBlobAudio() || shared;
+      if (a) {
+        try {
+          a.pause();
+          a.currentTime = 0;
+        } catch (_) {}
+      }
+      if (restore) {
+        restore.el.muted = restore.muted;
+        restore.el.volume = restore.volume;
+      }
+      window.postMessage({ type: "WAT_FORCE_UNMUTE" }, "*");
     }
-    return audio ? audio.currentSrc || audio.src : null;
   }
 
   function showResult(container, text, isError) {
