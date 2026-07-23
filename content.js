@@ -5,14 +5,29 @@
  * « Transcrire » et affiche le texte renvoyé par Whisper (OpenAI / Groq).
  *
  * Volontairement léger : aucune dépendance, pas de framework.
+ *
+ * Note DOM (2026) : WhatsApp Web n'insère plus de balise <audio> par
+ * message tant que le vocal n'est pas lu. On s'ancre donc sur le curseur
+ * de lecture ([role="slider"][aria-valuetext]) et le bouton play
+ * ([data-icon="audio-play"]), toujours présents. Le blob audio n'est
+ * récupéré qu'au clic, en déclenchant brièvement la lecture.
  */
 
 (() => {
   "use strict";
 
-  const BTN_FLAG = "watProcessed"; // dataset flag anti-doublon
+  const PROCESSED = "watDone"; // marqueur anti-doublon (sur la bulle)
   const LABEL_IDLE = "🎙️ Transcrire";
   const LABEL_LOADING = "⏳ Transcription…";
+
+  // Éléments qui identifient un message vocal / audio.
+  const VOICE_SELECTOR = [
+    '[role="slider"][aria-valuetext]',
+    '[data-icon="audio-play"]',
+    '[data-icon="ptt-play"]',
+  ].join(",");
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   // --- Utilitaires ---------------------------------------------------------
 
@@ -21,60 +36,79 @@
     const bytes = new Uint8Array(buffer);
     const chunk = 0x8000;
     for (let i = 0; i < bytes.length; i += chunk) {
-      binary += String.fromCharCode.apply(
-        null,
-        bytes.subarray(i, i + chunk)
-      );
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
     }
     return btoa(binary);
   }
 
-  // Remonte jusqu'à la bulle du message pour ancrer le bouton / le cache.
-  function findBubble(audio) {
+  // Remonte jusqu'à la bulle du message (ancre le bouton + clé de cache).
+  function findBubble(el) {
     return (
-      audio.closest(".message-in, .message-out") ||
-      audio.closest("[data-id]") ||
-      audio.parentElement?.parentElement ||
-      audio.parentElement
+      el.closest(".message-in, .message-out") ||
+      el.closest("[data-id]") ||
+      el.parentElement
     );
   }
 
-  // Identifiant stable du message (sert de clé de cache).
-  function messageKey(audio) {
-    const withId = audio.closest("[data-id]");
-    return withId?.getAttribute("data-id") || null;
+  function messageKey(bubble) {
+    return bubble.closest("[data-id]")?.getAttribute("data-id") || null;
   }
 
-  // Récupère l'URL blob de l'audio. WhatsApp ne charge parfois le blob
-  // qu'au moment de la lecture : on déclenche alors le bouton « play ».
-  async function resolveAudioUrl(audio, bubble) {
-    const isBlob = (u) => typeof u === "string" && u.startsWith("blob:");
-    if (isBlob(audio.currentSrc) || isBlob(audio.src)) {
-      return audio.currentSrc || audio.src;
-    }
-
-    // Déclenche la lecture pour forcer le chargement du blob.
-    const playBtn =
-      bubble?.querySelector(
-        '[data-icon="audio-play"], [data-icon="ptt-play"]'
-      ) || bubble?.querySelector('button[aria-label]');
-    const clickable = playBtn?.closest("button, [role='button']") || playBtn;
-    if (clickable) clickable.click();
-
-    // Attend l'apparition du blob (max ~4 s).
-    for (let i = 0; i < 40; i++) {
-      await new Promise((r) => setTimeout(r, 100));
-      if (isBlob(audio.currentSrc) || isBlob(audio.src)) {
-        // Remet en pause pour ne pas jouer le son à l'utilisateur.
-        const pauseBtn = bubble?.querySelector(
-          '[data-icon="audio-pause"], [data-icon="ptt-pause"]'
-        );
-        (pauseBtn?.closest("button, [role='button']") || pauseBtn)?.click();
-        try { audio.pause(); } catch (_) {}
-        return audio.currentSrc || audio.src;
-      }
+  // WhatsApp utilise un lecteur <audio> partagé ; on cherche celui qui
+  // pointe sur un blob.
+  function findBlobAudio() {
+    for (const a of document.querySelectorAll("audio")) {
+      const src = a.currentSrc || a.src || "";
+      if (src.startsWith("blob:")) return a;
     }
     return null;
+  }
+
+  function clickIcon(bubble, iconNames) {
+    for (const name of iconNames) {
+      const icon = bubble.querySelector(`[data-icon="${name}"]`);
+      if (icon) {
+        (icon.closest("button, [role='button']") || icon).click();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Déclenche la lecture pour forcer WhatsApp à charger le blob, récupère
+  // l'URL, puis remet en pause. Renvoie l'URL blob ou null.
+  async function triggerAndGetBlobUrl(bubble) {
+    const before = findBlobAudio();
+    const beforeSrc = before ? before.currentSrc || before.src : null;
+
+    if (!clickIcon(bubble, ["audio-play", "ptt-play"])) {
+      // Pas de bouton play trouvé : dernier recours, un blob déjà présent.
+      return beforeSrc && beforeSrc.startsWith("blob:") ? beforeSrc : null;
+    }
+
+    let audio = null;
+    for (let i = 0; i < 60; i++) {
+      await sleep(100);
+      const a = findBlobAudio();
+      if (a) {
+        // Coupe le son au plus tôt pour ne pas déranger l'utilisateur.
+        a.muted = true;
+        a.volume = 0;
+        const src = a.currentSrc || a.src;
+        if (src !== beforeSrc) {
+          audio = a; // nouveau média = celui qu'on vient de lancer
+          break;
+        }
+        audio = a; // sinon on garde le blob courant en repli
+      }
+    }
+
+    // Remet en pause.
+    clickIcon(bubble, ["audio-pause", "ptt-pause"]);
+    if (audio) {
+      try { audio.pause(); } catch (_) {}
+    }
+    return audio ? audio.currentSrc || audio.src : null;
   }
 
   function showResult(container, text, isError) {
@@ -91,14 +125,18 @@
 
   // --- Cœur : transcription d'un message ----------------------------------
 
-  async function transcribe(audio, bubble, btn, resultHost) {
+  async function transcribe(bubble, btn, bar) {
     btn.disabled = true;
     btn.textContent = LABEL_LOADING;
-    showResult(resultHost, "Transcription en cours…", false);
+    showResult(bar, "Transcription en cours…", false);
 
     try {
-      const url = await resolveAudioUrl(audio, bubble);
-      if (!url) throw new Error("Impossible de récupérer l'audio (lisez le message une fois puis réessayez).");
+      const url = await triggerAndGetBlobUrl(bubble);
+      if (!url) {
+        throw new Error(
+          "Audio introuvable. Lisez le message une fois puis réessayez."
+        );
+      }
 
       const resp = await fetch(url);
       const buf = await resp.arrayBuffer();
@@ -111,16 +149,16 @@
         type: "transcribe",
         audioBase64,
         mime,
-        key: messageKey(audio),
+        key: messageKey(bubble),
       });
 
       if (!answer) throw new Error("Aucune réponse du service worker.");
       if (!answer.ok) throw new Error(answer.error || "Erreur inconnue.");
 
-      showResult(resultHost, answer.text || "(vide)", false);
+      showResult(bar, answer.text || "(vide)", false);
       btn.textContent = "✅ Transcrit";
     } catch (err) {
-      showResult(resultHost, "⚠️ " + err.message, true);
+      showResult(bar, "⚠️ " + err.message, true);
       btn.textContent = LABEL_IDLE;
       btn.disabled = false;
     }
@@ -128,12 +166,10 @@
 
   // --- Injection du bouton -------------------------------------------------
 
-  async function injectFor(audio) {
-    if (audio.dataset[BTN_FLAG]) return;
-    audio.dataset[BTN_FLAG] = "1";
-
-    const bubble = findBubble(audio);
-    if (!bubble) return;
+  async function injectFor(anchor) {
+    const bubble = findBubble(anchor);
+    if (!bubble || bubble.dataset[PROCESSED]) return;
+    bubble.dataset[PROCESSED] = "1";
 
     const bar = document.createElement("div");
     bar.className = "wat-bar";
@@ -146,7 +182,7 @@
     bubble.appendChild(bar);
 
     // Affiche une transcription déjà en cache le cas échéant.
-    const key = messageKey(audio);
+    const key = messageKey(bubble);
     if (key) {
       try {
         const cache = await chrome.runtime.sendMessage({ type: "getCache", key });
@@ -157,22 +193,20 @@
       } catch (_) {}
     }
 
-    btn.addEventListener("click", () => transcribe(audio, bubble, btn, bar));
+    btn.addEventListener("click", () => transcribe(bubble, btn, bar));
   }
 
   function scan(root) {
-    const audios =
-      root.tagName === "AUDIO" ? [root] : root.querySelectorAll?.("audio") || [];
-    audios.forEach((a) => injectFor(a));
+    if (root.nodeType !== 1) return;
+    if (root.matches?.(VOICE_SELECTOR)) injectFor(root);
+    root.querySelectorAll?.(VOICE_SELECTOR).forEach(injectFor);
   }
 
   // --- Observation du DOM WhatsApp ----------------------------------------
 
   const observer = new MutationObserver((mutations) => {
     for (const m of mutations) {
-      m.addedNodes.forEach((n) => {
-        if (n.nodeType === 1) scan(n);
-      });
+      m.addedNodes.forEach((n) => scan(n));
     }
   });
 

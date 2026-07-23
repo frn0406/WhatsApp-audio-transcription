@@ -61,8 +61,19 @@ WhatsApp Web ──(blob audio)──▶ content.js ──(base64)──▶ back
 | `background.js` | Appel API Whisper + cache |
 | `popup.html` / `popup.js` | Écran de configuration |
 
+## Détection des vocaux
+
+WhatsApp Web n'insère plus de balise `<audio>` par message tant que le vocal n'est pas lu.
+L'extension s'ancre donc sur des éléments toujours présents : le curseur de lecture
+`[role="slider"][aria-valuetext]` et le bouton play `[data-icon="audio-play"]` (ou `ptt-play`).
+Le blob audio n'est récupéré qu'au clic, en déclenchant brièvement la lecture (le son est
+coupé automatiquement) puis en mettant en pause.
+
 ## Limites connues
 
 - WhatsApp Web change régulièrement son DOM ; si le bouton n'apparaît plus, les sélecteurs
-  de `content.js` (`.message-in/.message-out`, `data-icon="audio-play"`) devront être mis à jour.
+  de `content.js` (`[role="slider"][aria-valuetext]`, `data-icon="audio-play"`, `.message-in/.message-out`)
+  devront être mis à jour.
+- Un très court extrait sonore peut se faire entendre au tout début de la récupération, avant
+  la coupure automatique du son.
 - Taille max d'un fichier audio : 25 Mo (limite Whisper) — sans objet pour des vocaux normaux.
