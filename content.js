@@ -268,6 +268,48 @@
     return box;
   }
 
+  function showSummary(bar, text) {
+    let box = bar.querySelector(".wat-summary");
+    if (!box) {
+      box = document.createElement("div");
+      box.className = "wat-summary";
+      bar.appendChild(box);
+    }
+    box.textContent = text;
+    return box;
+  }
+
+  // Ajoute (une seule fois) le bouton « Résumer » sous une transcription.
+  function ensureSummaryButton(bar, key, transcript) {
+    if (!transcript || bar.querySelector(".wat-sum-btn")) return;
+
+    const btn = document.createElement("button");
+    btn.className = "wat-btn wat-sum-btn";
+    btn.type = "button";
+    btn.textContent = "📝 Résumer";
+    bar.appendChild(btn);
+
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      btn.textContent = "⏳ Résumé…";
+      try {
+        const answer = await chrome.runtime.sendMessage({
+          type: "summarize",
+          text: transcript,
+          key,
+        });
+        if (!answer) throw new Error("Aucune réponse du service worker.");
+        if (!answer.ok) throw new Error(answer.error || "Erreur inconnue.");
+        showSummary(bar, answer.summary || "(vide)");
+        btn.textContent = "✅ Résumé";
+      } catch (err) {
+        showSummary(bar, "⚠️ " + err.message);
+        btn.textContent = "📝 Résumer";
+        btn.disabled = false;
+      }
+    });
+  }
+
   // --- Cœur : transcription d'un message ----------------------------------
 
   async function transcribe(bubble, btn, bar) {
@@ -298,6 +340,7 @@
 
       showResult(bar, answer.text || "(vide)", false);
       btn.textContent = "✅ Transcrit";
+      ensureSummaryButton(bar, messageKey(bubble), answer.text);
     } catch (err) {
       showResult(bar, "⚠️ " + err.message, true);
       btn.textContent = LABEL_IDLE;
@@ -331,6 +374,12 @@
         if (cache && cache.text) {
           showResult(bar, cache.text, false);
           btn.textContent = "✅ Transcrit";
+          ensureSummaryButton(bar, key, cache.text);
+          if (cache.summary) {
+            showSummary(bar, cache.summary);
+            const sumBtn = bar.querySelector(".wat-sum-btn");
+            if (sumBtn) sumBtn.textContent = "✅ Résumé";
+          }
         }
       } catch (_) {}
     }

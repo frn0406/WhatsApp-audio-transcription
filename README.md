@@ -6,10 +6,14 @@ affiche la transcription en texte — optimisée pour le **français**.
 
 La transcription utilise l'API **Whisper**, au choix :
 
-| Fournisseur | Modèle | Remarque |
-|-------------|--------|----------|
-| **Groq** (défaut) | `whisper-large-v3-turbo` | Très rapide, offre gratuite généreuse |
-| **OpenAI** | `whisper-1` | Payant à l'usage |
+| Fournisseur | Transcription | Résumé | Remarque |
+|-------------|---------------|--------|----------|
+| **Groq** (défaut) | `whisper-large-v3-turbo` | `llama-3.3-70b-versatile` | Très rapide, offre gratuite généreuse |
+| **OpenAI** | `whisper-1` | `gpt-4o-mini` | Payant à l'usage |
+
+Après transcription, un bouton **📝 Résumer** synthétise le message en quelques puces
+(informations, demandes, dates, décisions) — pratique pour les longs vocaux. Même clé API,
+résumé mis en cache comme la transcription.
 
 L'audio est envoyé au fournisseur choisi **uniquement au moment où vous cliquez** sur
 « Transcrire ». Rien n'est transmis automatiquement.
