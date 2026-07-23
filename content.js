@@ -29,6 +29,20 @@
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+  // Injecte injected.js dans le contexte de la page (pour patcher play() et
+  // forcer le mode muet). Méthode <script> compatible toutes versions de
+  // Chrome, contrairement à la clé manifest "world": "MAIN".
+  function injectPageScript() {
+    try {
+      const s = document.createElement("script");
+      s.src = chrome.runtime.getURL("injected.js");
+      s.onload = () => s.remove();
+      (document.head || document.documentElement).appendChild(s);
+    } catch (e) {
+      console.warn("[WAT] injection du script page impossible :", e);
+    }
+  }
+
   // --- Utilitaires ---------------------------------------------------------
 
   function arrayBufferToBase64(buffer) {
@@ -210,6 +224,7 @@
     btn.textContent = LABEL_IDLE;
     bar.appendChild(btn);
     bubble.appendChild(bar);
+    console.debug("[WAT] bouton injecté sur un message vocal");
 
     // Affiche une transcription déjà en cache le cas échéant.
     const key = messageKey(bubble);
@@ -240,6 +255,20 @@
     }
   });
 
+  injectPageScript();
   observer.observe(document.body, { childList: true, subtree: true });
   scan(document.body); // premier passage
+
+  // Filet de sécurité : re-scan périodique (WhatsApp virtualise la liste des
+  // messages ; certains vocaux peuvent apparaître sans mutation observée).
+  let ticks = 0;
+  const poll = setInterval(() => {
+    scan(document.body);
+    if (++ticks > 40) clearInterval(poll); // ~2 min puis on s'arrête
+  }, 3000);
+
+  console.debug(
+    "[WAT] content script chargé — anchors vocaux détectés :",
+    document.querySelectorAll(VOICE_SELECTOR).length
+  );
 })();

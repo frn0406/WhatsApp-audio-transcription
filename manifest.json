@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Transcription Audio WhatsApp",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Transcrit les messages vocaux de WhatsApp Web en texte (français) via Whisper (OpenAI ou Groq). Léger, sans dépendances.",
   "permissions": ["storage"],
   "host_permissions": [
@@ -19,15 +19,15 @@
   "content_scripts": [
     {
       "matches": ["https://web.whatsapp.com/*"],
-      "js": ["injected.js"],
-      "run_at": "document_start",
-      "world": "MAIN"
-    },
-    {
-      "matches": ["https://web.whatsapp.com/*"],
       "js": ["content.js"],
       "css": ["content.css"],
       "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["injected.js"],
+      "matches": ["https://web.whatsapp.com/*"]
     }
   ]
 }
