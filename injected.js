@@ -22,9 +22,17 @@
 
   let forceMute = false;
 
+  // Tous les médias qui ont appelé play() — y compris les Audio() créés en JS
+  // et jamais attachés au DOM, invisibles pour querySelectorAll("audio").
+  const trackedMedia = [];
+
   const proto = HTMLMediaElement.prototype;
   const originalPlay = proto.play;
   proto.play = function () {
+    if (!trackedMedia.includes(this)) {
+      trackedMedia.push(this);
+      if (trackedMedia.length > 8) trackedMedia.shift();
+    }
     if (forceMute) {
       try {
         this.muted = true;
@@ -107,7 +115,6 @@
       forceMute = false;
       return;
     }
-    if (msg.type !== "WAT_GET_MEDIA") return;
 
     const reply = (payload, transfer) =>
       window.postMessage(
@@ -115,6 +122,53 @@
         "*",
         transfer || []
       );
+
+    // État de tous les médias ayant joué (attachés au DOM ou non).
+    if (msg.type === "WAT_GET_PLAYING") {
+      reply({
+        ok: true,
+        media: trackedMedia.map((m) => ({
+          src: m.src,
+          currentSrc: m.currentSrc,
+          srcObject: m.srcObject ? m.srcObject.constructor.name : null,
+          paused: m.paused,
+          readyState: m.readyState,
+          duration: m.duration,
+          inDom: m.isConnected,
+        })),
+      });
+      return;
+    }
+
+    // Contrôle à distance du média suivi (accélérer / stopper).
+    if (msg.type === "WAT_CONTROL") {
+      const el =
+        trackedMedia.find((m) => (m.currentSrc || m.src) === msg.url) ||
+        trackedMedia[trackedMedia.length - 1];
+      if (!el) {
+        reply({ ok: false, error: "no-media" });
+        return;
+      }
+      try {
+        if (msg.action === "rate") {
+          el.muted = true;
+          el.volume = 0;
+          el.playbackRate = msg.rate || 16;
+        } else if (msg.action === "stop") {
+          el.pause();
+          el.currentTime = 0;
+          el.playbackRate = 1;
+          el.muted = false;
+          el.volume = 1;
+        }
+        reply({ ok: true });
+      } catch (e) {
+        reply({ ok: false, error: String((e && e.message) || e) });
+      }
+      return;
+    }
+
+    if (msg.type !== "WAT_GET_MEDIA") return;
 
     try {
       const url = msg.url;

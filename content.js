@@ -138,9 +138,8 @@
     }
   });
 
-  // Demande à injected.js les octets (ou juste la taille) capturés pour une
-  // URL de média. Renvoie null si pas de réponse dans le délai.
-  function getCapturedMedia(url, sizeOnly) {
+  // Envoie une requête à injected.js et attend sa réponse (null si délai).
+  function sendToPage(payload) {
     return new Promise((resolve) => {
       const id = ++mediaReqId;
       const timer = setTimeout(() => {
@@ -151,8 +150,13 @@
         clearTimeout(timer);
         resolve(data);
       });
-      window.postMessage({ type: "WAT_GET_MEDIA", url, id, sizeOnly: !!sizeOnly }, "*");
+      window.postMessage(Object.assign({ id }, payload), "*");
     });
+  }
+
+  // Octets (ou juste la taille) capturés pour une URL de média.
+  function getCapturedMedia(url, sizeOnly) {
+    return sendToPage({ type: "WAT_GET_MEDIA", url, sizeOnly: !!sizeOnly });
   }
 
   // Journalise l'état de tous les éléments <audio> (diagnostic).
@@ -191,6 +195,7 @@
     dumpAudioState("avant clic play");
 
     let result = null;
+    let url = null;
     try {
       const playCtl = findPlayControl(bubble);
       if (!playCtl) {
@@ -200,25 +205,36 @@
       }
       playCtl.click();
 
-      // 1. Attend qu'un média blob apparaisse dans un <audio>.
-      let url = null;
-      let audioEl = null;
-      for (let i = 0; i < 100; i++) {
+      // 1. Attend qu'un média démarre avec une source blob. On interroge
+      // injected.js, qui voit TOUS les médias ayant appelé play() — y compris
+      // les Audio() créés en JS et jamais attachés au DOM, invisibles pour
+      // querySelectorAll("audio").
+      for (let i = 0; i < 120 && !url; i++) {
         await sleep(80);
-        const a = findBlobAudio();
-        if (!a) continue;
-        silence(a);
-        const src = a.currentSrc || a.src;
-        if (src && src !== beforeSrc) {
-          url = src;
-          audioEl = a;
-          break;
+        const playing = await sendToPage({ type: "WAT_GET_PLAYING" });
+        const list = (playing && playing.media) || [];
+        // Le plus récent d'abord.
+        for (let j = list.length - 1; j >= 0; j--) {
+          const src = list[j].currentSrc || list[j].src || "";
+          if (src.startsWith("blob:") && src !== beforeSrc) {
+            url = src;
+            break;
+          }
         }
-        // Repli : le lecteur réutilise la même URL.
-        url = src || url;
-        audioEl = a;
+        if (!url) {
+          // Repli DOM classique.
+          const a = findBlobAudio();
+          if (a) {
+            silence(a);
+            const src = a.currentSrc || a.src;
+            if (src) url = src;
+          }
+        }
       }
       if (!url) {
+        const playing = await sendToPage({ type: "WAT_GET_PLAYING" });
+        console.warn("[WAT] aucun média blob détecté — médias suivis :",
+          playing && playing.media);
         dumpAudioState("aucun média blob détecté");
         return null;
       }
@@ -243,9 +259,7 @@
       // des appendBuffer. On accélère la lecture muette pour forcer le
       // chargement complet si le flux est progressif, et on attend que la
       // taille capturée se stabilise (ou que le flux soit clos).
-      if (audioEl) {
-        try { audioEl.playbackRate = 16; } catch (_) {}
-      }
+      await sendToPage({ type: "WAT_CONTROL", url, action: "rate", rate: 16 });
       let lastSize = 0;
       let stableRounds = 0;
       for (let i = 0; i < 900; i++) {
@@ -278,6 +292,10 @@
       console.warn("[WAT] réponse capture :", media);
       return null;
     } finally {
+      // Stoppe le média suivi (même hors DOM) via injected.js.
+      if (url) {
+        try { await sendToPage({ type: "WAT_CONTROL", url, action: "stop" }); } catch (_) {}
+      }
       const a = findBlobAudio() || shared;
       if (a) {
         try {
