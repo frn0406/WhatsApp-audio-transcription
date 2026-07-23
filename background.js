@@ -81,6 +81,8 @@ async function callWhisper({ audioBase64, mime, key }) {
     ? "ogg"
     : mime.includes("mpeg") || mime.includes("mp3")
     ? "mp3"
+    : mime.includes("mp4") || mime.includes("m4a") || mime.includes("aac")
+    ? "m4a"
     : mime.includes("wav")
     ? "wav"
     : "webm";

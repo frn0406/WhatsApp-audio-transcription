@@ -98,6 +98,38 @@
     return false;
   }
 
+  // --- Canal de récupération des médias capturés par injected.js ----------
+
+  let mediaReqId = 0;
+  const mediaPending = new Map();
+
+  window.addEventListener("message", (event) => {
+    if (event.source !== window || !event.data) return;
+    if (event.data.type !== "WAT_MEDIA") return;
+    const resolve = mediaPending.get(event.data.id);
+    if (resolve) {
+      mediaPending.delete(event.data.id);
+      resolve(event.data);
+    }
+  });
+
+  // Demande à injected.js les octets (ou juste la taille) capturés pour une
+  // URL de média. Renvoie null si pas de réponse dans le délai.
+  function getCapturedMedia(url, sizeOnly) {
+    return new Promise((resolve) => {
+      const id = ++mediaReqId;
+      const timer = setTimeout(() => {
+        mediaPending.delete(id);
+        resolve(null);
+      }, 3000);
+      mediaPending.set(id, (data) => {
+        clearTimeout(timer);
+        resolve(data);
+      });
+      window.postMessage({ type: "WAT_GET_MEDIA", url, id, sizeOnly: !!sizeOnly }, "*");
+    });
+  }
+
   // Journalise l'état de tous les éléments <audio> (diagnostic).
   function dumpAudioState(tag) {
     const els = [...document.querySelectorAll("audio")];
@@ -134,57 +166,96 @@
     dumpAudioState("avant clic play");
 
     let result = null;
-    let lastFetchError = null;
     try {
       if (!clickIcon(bubble, ["audio-play", "ptt-play"])) {
         console.warn("[WAT] bouton play introuvable dans la bulle");
         return null;
       }
 
-      // Le fichier complet est disponible dès le début de la lecture : inutile
-      // d'écouter tout le message. On tente le téléchargement dès qu'un blob
-      // apparaît, tant qu'il est encore vivant.
+      // 1. Attend qu'un média blob apparaisse dans un <audio>.
+      let url = null;
+      let audioEl = null;
       for (let i = 0; i < 100; i++) {
         await sleep(80);
         const a = findBlobAudio();
         if (!a) continue;
         silence(a);
         const src = a.currentSrc || a.src;
-        if (!src || src === beforeSrc) continue; // pas encore le nouveau média
+        if (src && src !== beforeSrc) {
+          url = src;
+          audioEl = a;
+          break;
+        }
+        // Repli : le lecteur réutilise la même URL.
+        url = src || url;
+        audioEl = a;
+      }
+      if (!url) {
+        dumpAudioState("aucun média blob détecté");
+        return null;
+      }
+      console.log("[WAT] média détecté :", url);
 
-        try {
-          const resp = await fetch(src);
-          const buf = await resp.arrayBuffer();
-          if (buf.byteLength) {
-            result = {
-              buf,
-              mime: resp.headers.get("content-type") || "audio/ogg",
-            };
-            break;
+      // 2. Cas simple : Blob complet, téléchargeable directement.
+      try {
+        const resp = await fetch(url);
+        const buf = await resp.arrayBuffer();
+        if (buf.byteLength) {
+          console.log("[WAT] récupéré via fetch direct,", buf.byteLength, "octets");
+          return (result = {
+            buf,
+            mime: resp.headers.get("content-type") || "audio/ogg",
+          });
+        }
+      } catch (e) {
+        console.log("[WAT] fetch direct impossible (flux MediaSource probable) :", e && e.message);
+      }
+
+      // 3. Cas MediaSource : les octets sont capturés par injected.js au fil
+      // des appendBuffer. On accélère la lecture muette pour forcer le
+      // chargement complet si le flux est progressif, et on attend que la
+      // taille capturée se stabilise (ou que le flux soit clos).
+      if (audioEl) {
+        try { audioEl.playbackRate = 16; } catch (_) {}
+      }
+      let lastSize = 0;
+      let stableRounds = 0;
+      for (let i = 0; i < 900; i++) {
+        const info = await getCapturedMedia(url, true);
+        if (info && info.ok && info.size > 0) {
+          if (info.ended) break; // flux clos = tout est capturé
+          if (info.size === lastSize) {
+            if (++stableRounds >= 15) break; // ~2 s sans nouvel octet
+          } else {
+            stableRounds = 0;
+            lastSize = info.size;
           }
-        } catch (e) {
-          lastFetchError = e;
-          // Blob MediaSource (flux) → non téléchargeable via fetch.
-          console.warn("[WAT] fetch du blob échoué :", e && e.message);
         }
+        await sleep(120);
       }
 
-      if (!result) {
-        dumpAudioState("ÉCHEC récupération");
-        if (lastFetchError) {
-          console.warn(
-            "[WAT] Dernière erreur fetch :",
-            lastFetchError && lastFetchError.message
-          );
-        }
+      const media = await getCapturedMedia(url, false);
+      if (media && media.ok && media.buffer && media.buffer.byteLength) {
+        console.log(
+          "[WAT] récupéré via capture", media.kind + ",",
+          media.buffer.byteLength, "octets, mime:", media.mime
+        );
+        return (result = {
+          buf: media.buffer,
+          mime: (media.mime || "audio/ogg").split(";")[0],
+        });
       }
-      return result;
+
+      dumpAudioState("ÉCHEC récupération");
+      console.warn("[WAT] réponse capture :", media);
+      return null;
     } finally {
       const a = findBlobAudio() || shared;
       if (a) {
         try {
           a.pause();
           a.currentTime = 0;
+          a.playbackRate = 1;
         } catch (_) {}
       }
       if (restore) {
