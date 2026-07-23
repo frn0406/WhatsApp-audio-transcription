@@ -87,15 +87,40 @@
     } catch (_) {}
   }
 
-  function clickIcon(bubble, iconNames) {
-    for (const name of iconNames) {
-      const icon = bubble.querySelector(`[data-icon="${name}"]`);
-      if (icon) {
-        (icon.closest("button, [role='button']") || icon).click();
-        return true;
-      }
+  // Trouve le contrôle « play » du vocal, quelle que soit la variante du DOM :
+  // icône data-icon contenant "play", ou bouton avec un aria-label parlant
+  // (« Lire le message vocal », « Play voice message », etc.).
+  function findPlayControl(bubble) {
+    const icon = bubble.querySelector(
+      '[data-icon*="play" i]:not([data-icon*="pause" i])'
+    );
+    if (icon) return icon.closest("button, [role='button']") || icon;
+
+    const RX_PLAY = /(lire|play|écouter|ecouter|reproduc|abspiel|riprodu)/i;
+    const candidates = bubble.querySelectorAll(
+      "button[aria-label], [role='button'][aria-label]"
+    );
+    for (const el of candidates) {
+      const label = el.getAttribute("aria-label") || "";
+      if (RX_PLAY.test(label) && !/pause/i.test(label)) return el;
     }
-    return false;
+    return null;
+  }
+
+  // Diagnostic : liste les attributs réellement présents dans la bulle.
+  function dumpBubbleControls(bubble) {
+    console.warn(
+      "[WAT] contrôles présents dans la bulle — data-icons :",
+      [...bubble.querySelectorAll("[data-icon]")].map((e) =>
+        e.getAttribute("data-icon")
+      ),
+      "| aria-labels :",
+      [...bubble.querySelectorAll("[aria-label]")].map((e) =>
+        e.getAttribute("aria-label")
+      ),
+      "| boutons :",
+      bubble.querySelectorAll("button, [role='button']").length
+    );
   }
 
   // --- Canal de récupération des médias capturés par injected.js ----------
@@ -167,10 +192,13 @@
 
     let result = null;
     try {
-      if (!clickIcon(bubble, ["audio-play", "ptt-play"])) {
+      const playCtl = findPlayControl(bubble);
+      if (!playCtl) {
         console.warn("[WAT] bouton play introuvable dans la bulle");
+        dumpBubbleControls(bubble);
         return null;
       }
+      playCtl.click();
 
       // 1. Attend qu'un média blob apparaisse dans un <audio>.
       let url = null;
